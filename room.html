@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Room 3D Plan</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; background:#e9e7e2; font:13px/1.45 system-ui, sans-serif; color:#222; }
+  #panel { position:fixed; top:12px; left:12px; width:250px; max-height:calc(100% - 48px); overflow:auto; background:#fffe; border-radius:10px; padding:12px; box-shadow:0 2px 12px #0002; }
+  #panel h1 { font-size:15px; margin:0 0 8px; }
+  button { font:inherit; padding:5px 9px; margin:0 4px 6px 0; border:1px solid #bbb; background:#fff; border-radius:6px; cursor:pointer; }
+  button.on { background:#333; color:#fff; border-color:#333; }
+  label { display:block; margin:3px 0; }
+  #info { margin-top:8px; border-top:1px solid #ddd; padding-top:8px; }
+  .gap { background:#1565c0; }
+  h2 { font-size:12px; margin:6px 0 4px; }
+  #palette { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-bottom:6px; }
+  #palette button { margin:0; text-align:left; }
+  .row { display:flex; gap:4px; }
+  .row input, .row select { flex:1; min-width:0; font:inherit; padding:4px 6px; margin-bottom:6px; }
+  .row button { margin-right:0; }
+  #status { min-height:1.4em; color:#1565c0; }
+  button:disabled { opacity:.45; cursor:default; }
+  .warn { color:#b00020; font-weight:600; }
+  .dim { pointer-events:none; background:#222c; color:#fff; padding:1px 6px; border-radius:4px; font-size:11px; white-space:nowrap; }
+  @media (max-width:600px) { #panel { width:auto; right:12px; top:auto; bottom:12px; max-height:45%; } }
+</style>
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="panel">
+  <h1>Room 370 × 470 cm</h1>
+  <div>
+    <button id="suggested" class="on">Suggested</button><button id="original">Original plan</button>
+  </div>
+  <div>
+    <button id="iso" class="on">3D view</button><button id="top">Top view</button><button id="arch">Arch wall</button>
+  </div>
+  <h2>Saved versions</h2>
+  <div class="row"><input type="text" id="versionName" maxlength="60" placeholder="Name this arrangement"><button id="saveVersion">Save</button></div>
+  <div class="row"><select id="versions" aria-label="Saved versions"></select></div>
+  <div><button id="loadVersion">Load</button><button id="deleteVersion">Delete</button><button id="exportVersions">Export</button><button id="importVersions">Import</button></div>
+  <input type="file" id="importFile" accept=".json,application/json" hidden>
+  <div id="status" role="status"></div>
+  <h2>Add furniture</h2>
+  <div id="palette"></div>
+  <div>
+    <button id="rotate">Rotate (R)</button><button id="remove">Remove (Del)</button><button id="reset">Reset layout</button>
+  </div>
+  <label><input type="checkbox" id="longBed"> Bed frame 105 × 250</label>
+  <label><input type="checkbox" id="pulled"> Chairs pulled out</label>
+  <label><input type="checkbox" id="labels" checked> Show labels</label>
+  <button id="export">Download .glb</button>
+  <div id="info"></div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+// Units are cm. x: left wall 0 -> right wall W. z: door wall 0 -> window wall D.
+const W = 370, D = 470, H = 260, T = 12;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#e9e7e2');
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 10, 5000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(innerWidth, innerHeight);
+Object.assign(labelRenderer.domElement.style, { position: 'fixed', top: 0, left: 0, pointerEvents: 'none' });
+document.body.insertBefore(labelRenderer.domElement, document.getElementById('panel'));
+const controls = new OrbitControls(camera, labelRenderer.domElement);
+labelRenderer.domElement.style.pointerEvents = 'auto';
+
+scene.add(new THREE.HemisphereLight('#ffffff', '#8a7a66', 1.6));
+const sun = new THREE.DirectionalLight('#fff4e0', 1.4);
+sun.position.set(450, 600, 500);
+sun.target.position.set(W / 2, 0, D / 2);
+sun.castShadow = true;
+Object.assign(sun.shadow.camera, { left: -450, right: 450, top: 450, bottom: -450, far: 1600 });
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0005;
+scene.add(sun, sun.target);
+
+const mats = new Map();
+const mat = (color, extra = {}) => {
+  const key = color + JSON.stringify(extra);
+  if (!mats.has(key)) mats.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.75, ...extra }));
+  return mats.get(key);
+};
+function mesh(parent, geo, color, x, y, z, extra) {
+  const m = new THREE.Mesh(geo, mat(color, extra));
+  m.position.set(x, y, z);
+  m.castShadow = m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+// Box given by its min corner (x, y, z) and size.
+const box = (p, x, y, z, w, h, d, c, r = 0, extra) => mesh(p,
+  r ? new RoundedBoxGeometry(w, h, d, 3, r) : new THREE.BoxGeometry(w, h, d),
+  c, x + w / 2, y + h / 2, z + d / 2, extra);
+const cyl = (p, x, y, z, rt, rb, h, c, extra) =>
+  mesh(p, new THREE.CylinderGeometry(rt, rb, h, 32), c, x, y + h / 2, z, extra);
+
+// ---------- shell ----------
+const shell = new THREE.Group();
+scene.add(shell);
+for (let i = 0; i < W; i += 18.5)
+  box(shell, i, -4, 0, Math.min(18.2, W - i), 4, D, ['#a88b6c', '#b09373', '#9f8264'][Math.round(i / 18.5) % 3]);
+
+const walls = []; // each hides when the camera is on its outer side
+function wall(isOutside) {
+  const g = new THREE.Group();
+  shell.add(g);
+  walls.push({ g, isOutside });
+  return g;
+}
+const WALL = '#f1ece2';
+const doorX = 272, doorW = 90;
+// Door wall: arched alcove left of the door, recessed outwards so it takes no floor area.
+const ARCH = { x0: 22, x1: 247, depth: 45, height: 235 };
+const back = wall(c => c.z < -ARCH.depth);
+const CREAM = '#e6d3a3', aw = ARCH.x1 - ARCH.x0;
+box(back, -T, 0, -T, ARCH.x0 + T, H, T, WALL);
+box(back, ARCH.x1, 0, -T, doorX - ARCH.x1, H, T, WALL);
+box(back, doorX + doorW, 0, -T, W + T - doorX - doorW, H, T, WALL);
+box(back, doorX, 205, -T, doorW, H - 205, T, WALL);
+box(back, ARCH.x0 - T, 0, -ARCH.depth - T, aw + T * 2, ARCH.height + 15, T, CREAM);
+for (const x of [ARCH.x0 - T, ARCH.x1]) box(back, x, 0, -ARCH.depth, T, ARCH.height + 15, ARCH.depth - T, CREAM);
+box(back, ARCH.x0, ARCH.height + 5, -ARCH.depth, aw, 10, ARCH.depth - T, CREAM);
+box(back, ARCH.x0, -4, -ARCH.depth, aw, 4, ARCH.depth, '#a88b6c');
+// Scalloped top edge, as [control, end] pairs of (fraction of width, height).
+const scallops = [[[0.01, 222], [0.14, 208]], [[0.2, 234], [0.42, 222]], [[0.59, 252], [0.76, 218]], [[0.99, 236], [1, 185]]];
+const along = u => ARCH.x0 + u * aw;
+const header = new THREE.Shape();
+header.moveTo(ARCH.x0, 185);
+for (const [[cu, cy], [u, y]] of scallops) header.quadraticCurveTo(along(cu), cy, along(u), y);
+header.lineTo(ARCH.x1, H);
+header.lineTo(ARCH.x0, H);
+mesh(back, new THREE.ExtrudeGeometry(header, { depth: T, bevelEnabled: false }), WALL, 0, 0, -T);
+// White moulding around the opening.
+const edge = (u, y) => new THREE.Vector3(along(u), y, 1);
+const trim = [new THREE.LineCurve3(edge(0, 0), edge(0, 185))];
+let last = edge(0, 185);
+for (const [[cu, cy], [u, y]] of scallops) {
+  trim.push(new THREE.QuadraticBezierCurve3(last, edge(cu, cy), edge(u, y)));
+  last = edge(u, y);
+}
+trim.push(new THREE.LineCurve3(last, edge(1, 0)));
+for (const curve of trim) mesh(back, new THREE.TubeGeometry(curve, 24, 3.5, 10), '#ffffff', 0, 0, 0);
+for (const u of [0.11, 0.89])
+  box(back, along(u) - 12, 135, -ARCH.depth, 24, 30, 4, '#ffffff', 1.5, { emissive: '#ffe9bd', emissiveIntensity: 0.9 });
+const winX = 107, winW = 180;
+const front = wall(c => c.z > D);
+box(front, -T, 0, D, winX + T, H, T, WALL);
+box(front, winX + winW, 0, D, W + T - winX - winW, H, T, WALL);
+box(front, winX, 0, D, winW, 90, T, WALL);
+box(front, winX, 210, D, winW, H - 210, T, WALL);
+box(front, winX, 90, D + 4, winW, 120, 2, '#bfe0ee', 0, { transparent: true, opacity: 0.4 });
+for (const x of [winX, winX + winW / 2 - 2, winX + winW - 4]) box(front, x, 90, D + 2, 4, 120, 6, '#8d9296');
+box(wall(c => c.x < 0), -T, 0, 0, T, H, D, WALL);
+
+box(wall(c => c.x > W), W, 0, 0, T, H, D, WALL);
+
+// Door leaf, open against the right wall; arc on the floor shows the swing.
+box(shell, doorX + doorW - 4, 0, 0, 4, 205, doorW - 4, '#c9a57b');
+const arc = new THREE.Mesh(new THREE.RingGeometry(doorW - 2, doorW, 48, 1, Math.PI / 2, Math.PI / 2), mat('#555555', { side: THREE.DoubleSide }));
+arc.rotation.x = Math.PI / 2;
+arc.position.set(doorX + doorW, 0.6, 0);
+shell.add(arc);
+
+// ---------- furniture ----------
+const WHITE = '#f7f6f3';
+
+function tvUnit(p, width, depth) {
+  box(p, 0, 8, 0, width, 40, depth, WHITE, 1);
+  for (const x of [4, width / 3, width * 2 / 3, width - 8]) box(p, x, 0, depth - 8, 4, 8, 4, WHITE);
+  box(p, width * 0.25, 30, depth - 0.5, width * 0.5, 13, 1, '#2f2c2a');
+  for (const x of [width * 0.25, width * 0.5, width * 0.75]) box(p, x, 8, depth, 0.6, 40, 0.6, '#bbbbbb');
+}
+
+// 55" TV on its stand; the base sits at y = 0.
+function screen(p) {
+  box(p, 37, 0, 0, 50, 3, 22, '#161616');
+  box(p, 58, 2, 8, 8, 8, 5, '#161616');
+  box(p, 0, 8, 8, 124, 73, 5, '#0d0f12', 1, { roughness: 0.25 });
+}
+
+function wallCabinets(p) {
+  for (let i = 0; i < 4; i++) box(p, i * 60 + 0.5, 190, 0, 59, 38, 37, WHITE, 1);
+  box(p, 180, 120, 0, 60, 4, 37, WHITE);
+  box(p, 180, 120, 0, 4, 70, 37, WHITE);
+  box(p, 236, 120, 0, 4, 70, 37, WHITE);
+  box(p, 184, 153, 0, 52, 1.5, 34, '#cfe8ee', 0, { transparent: true, opacity: 0.6 });
+  for (let i = 0; i < 5; i++) cyl(p, 192 + i * 10, 124, 18, 2.5, 3.5, 14 + (i % 3) * 5, ['#7a4a2a', '#d8d2c4', '#46705a'][i % 3]);
+}
+
+function bed(p, w, len, color) {
+  box(p, 0, 0, 0, w, 30, len, color, 2);
+  box(p, 2, 30, 2, w - 4, 18, len - 4, '#e4ecf2', 6);
+  box(p, 0, 0, 0, w, 75, 5, color, 2);
+  box(p, w / 2 - 28, 47, 14, 56, 11, 32, '#ffffff', 5);
+  box(p, 1.5, 44, len * 0.34, w - 3, 8, len * 0.64, '#8fa9bd', 3.5);
+}
+
+// Faces -z (toward the TV); back is at local z = depth.
+function sofa(p, w, depth) {
+  const C = '#e8e0cc', arm = 20, seat = (w - arm * 2) / 3;
+  box(p, 0, 5, 0, w, 24, depth, C, 7);
+  for (let i = 0; i < 3; i++) {
+    box(p, arm + i * seat + 0.5, 27, 1, seat - 1, 17, depth - 26, C, 7);
+    const b = box(p, arm + i * seat + 0.5, 40, depth - 27, seat - 1, 64, 22, C, 9);
+    b.rotation.x = 0.08;
+    const cushion = box(p, arm + i * seat + 10, 44, depth - 42, seat - 20, 30, 11, i === 2 ? '#b9d0bd' : '#d5d6d0', 5);
+    cushion.rotation.x = 0.2;
+  }
+  for (const x of [0, w - arm]) box(p, x, 20, 2, arm, 42, depth - 4, C, 9);
+  for (const x of [6, w - 10]) for (const z of [8, depth - 12]) box(p, x, 0, z, 4, 6, 4, '#222222');
+}
+
+// Rectangle with bowed short ends, on a single pedestal.
+function table(p, w, d) {
+  const s = new THREE.Shape();
+  const hw = w / 2, hd = d / 2, bow = 20;
+  s.moveTo(-hw + bow, -hd);
+  s.lineTo(hw - bow, -hd);
+  s.quadraticCurveTo(hw + bow, 0, hw - bow, hd);
+  s.lineTo(-hw + bow, hd);
+  s.quadraticCurveTo(-hw - bow, 0, -hw + bow, -hd);
+  const top = mesh(p, new THREE.ExtrudeGeometry(s, { depth: 2.5, bevelEnabled: false }), '#b8ad9a', hw, 75.5, hd);
+  top.rotation.x = Math.PI / 2;
+  cyl(p, hw, 2, hd, 8, 10, 71, '#9a9da0', { metalness: 0.5, roughness: 0.4 });
+  cyl(p, hw, 0, hd, 31, 32, 2, '#9a9da0', { metalness: 0.5, roughness: 0.4 });
+}
+
+// Centred on its origin; back is at local -z.
+function chair(p) {
+  const C = '#524d49';
+  box(p, -22, 41, -22, 44, 7, 45, C, 2);
+  for (const x of [-20, 17]) for (const z of [-20, 18]) box(p, x, 0, z, 3, 42, 3, '#3f3b38');
+  const b = box(p, -20, 45, -24, 40, 56, 4, C, 1.8);
+  b.rotation.x = -0.1;
+}
+
+// Back against local x = 0, runs along +z.
+function sideboard(p, len, depth) {
+  box(p, 0, 8, 0, depth, 66, len, WHITE, 1);
+  for (let i = 0; i <= 3; i++) box(p, depth - 0.2, 8, Math.min(i * len / 3, len - 0.6), 0.6, 66, 0.6, '#bbbbbb');
+  for (const z of [4, len - 8]) for (const x of [4, depth - 8]) box(p, x, 0, z, 4, 8, 4, WHITE);
+  for (const [z, h] of [[13, 90], [len - 13, 62]]) {
+    cyl(p, 20, 74, z, 8, 7, 26, '#cfe8ee', { transparent: true, opacity: 0.55 });
+    for (let i = 0; i < 5; i++) {
+      const x = 14 + (i % 3) * 6, dz = (i - 2) * 4, y = h - (i % 2) * 14;
+      cyl(p, x, 76, z + dz, 0.9, 0.9, y, '#4f7a35');
+      for (let k = 0; k < 4; k++) {
+        const leaf = mesh(p, new THREE.SphereGeometry(1, 12, 8), '#5f9140', x + (k % 2) * 6 - 3, 76 + y - k * 5, z + dz + (k - 1.5) * 4);
+        leaf.scale.set(2, 1.2, 10);
+        leaf.rotation.set(k * 0.6 - 0.8, k * 1.7, 0);
+      }
+    }
+  }
+}
+
+// ---------- layouts ----------
+const furniture = new THREE.Group(), overlay = new THREE.Group();
+scene.add(furniture, overlay);
+
+const state = { layout: 'suggested', longBed: false, pulled: false, selected: null };
+const TABLE = { w: 130, d: 90 }, BOARD = 180;
+const isSug = () => state.layout === 'suggested';
+const bedSize = () => state.longBed ? { w: 105, d: 250 } : { w: 80, d: 200 };
+const tvSize = () => isSug() ? { w: 240, d: 40 } : { w: 200, d: 45 };
+const sofaSize = () => isSug() ? { w: 210, d: 95 } : { w: 200, d: 100 };
+
+// Footprint of a builder whose origin is its minimum corner:
+// centre (cx, cz) in builder coordinates, size w, d and height range y0..y1.
+const corner = (w, d, y1, y0 = 0) => ({ cx: w / 2, cz: d / 2, w, d, y0, y1 });
+const sized = (name, { w, d }) => `${name} ${w}×${d}`;
+const CATALOG = {
+  bed: { name: 'Bed', make: () => { const b = bedSize(); return { label: sized('Bed', b), builder: bed, args: [b.w, b.d, '#c9a57b'], fp: corner(b.w, b.d, 75) }; } },
+  sofa: { name: 'Sofa', make: () => { const o = sofaSize(); return { label: sized('Sofa', o), builder: sofa, args: [o.w, o.d], fp: corner(o.w, o.d, 108) }; } },
+  table: { name: 'Table', make: () => ({ label: sized('Table', TABLE), builder: table, args: [TABLE.w, TABLE.d], fp: corner(TABLE.w, TABLE.d, 77) }) },
+  chair: { name: 'Chair', make: () => ({ label: 'Chair', builder: chair, args: [], fp: { cx: 0, cz: -1.5, w: 44, d: 49, y0: 0, y1: 100 } }) },
+  tv: { name: 'TV unit', make: () => { const t = tvSize(); return { label: sized('TV unit', t), builder: tvUnit, args: [t.w, t.d], fp: corner(t.w, t.d, 48) }; } },
+  screen: { name: 'TV', make: () => ({ label: 'TV 55"', builder: screen, args: [], fp: corner(124, 22, 82) }) },
+  cabinets: { name: 'Wall cabinets', make: () => ({ label: 'Wall cabinets', builder: wallCabinets, args: [], fp: corner(240, 37, 228, 120) }) },
+  board: { name: 'Sideboard', make: () => ({ label: sized('Sideboard', { w: BOARD, d: 42 }), builder: sideboard, args: [BOARD, 42], fp: corner(42, BOARD, 74) }) },
+};
+
+// Starting pieces: x, z is the footprint centre, rot counts quarter turns.
+function defaults() {
+  const sug = isSug(), b = bedSize(), tv = tvSize(), so = sofaSize();
+  const bedZ = sug ? (state.longBed ? 25 : 70) : Math.min(128, D - b.d);
+  const tableZ = sug ? 325 : 210, tx = sug ? 0 : W - TABLE.w - 1;
+  const piece = (id, type, x, z, rot = 0) => ({ id, type, x, z, rot });
+  const list = [
+    sug ? piece('tv', 'tv', W - tv.d / 2, 230, 3) : piece('tv', 'tv', tv.w / 2, tv.d / 2),
+    piece('bed', 'bed', b.w / 2, bedZ + b.d / 2),
+    piece('sofa', 'sofa', W - so.w / 2, D - so.d / 2),
+    piece('table', 'table', tx + TABLE.w / 2, tableZ + TABLE.d / 2),
+  ];
+  [tx + 35, tx + 95].forEach((x, i) => list.push(
+    piece(`chair${i}a`, 'chair', x, tableZ - 6.5),
+    piece(`chair${i}b`, 'chair', x, tableZ + TABLE.d + 6.5, 2),
+  ));
+  list.push(sug ? piece('screen', 'screen', (ARCH.x0 + ARCH.x1) / 2, -23) : piece('screen', 'screen', 95, 20));
+  if (sug) list.push(
+    piece('cabinets', 'cabinets', W - 18.5, 230, 3),
+    piece('board', 'board', (ARCH.x0 + ARCH.x1) / 2, 22 - ARCH.depth, 3),
+  );
+  return list;
+}
+
+const cleanItems = list => list
+  .filter(i => i && Object.hasOwn(CATALOG, i.type) && Number.isFinite(i.x) && Number.isFinite(i.z))
+  .map(({ type, x, z, rot }, n) => ({ id: `${type}-${n}`, type, x, z, rot: Number.isInteger(rot) ? ((rot % 4) + 4) % 4 : 0 }));
+
+// A layout is stored only once the user has changed it; otherwise defaults() applies.
+const STORE = 'room-3d-layouts-v4';
+const saved = { suggested: null, original: null };
+try {
+  const data = JSON.parse(localStorage.getItem(STORE));
+  for (const k in saved)
+    if (Array.isArray(data?.[k])) saved[k] = cleanItems(data[k]);
+} catch {}
+const persist = () => { try { localStorage.setItem(STORE, JSON.stringify(saved)); } catch {} };
+
+let items = [];
+
+function rebuild() {
+  furniture.traverse(o => { if (o.isMesh) o.geometry.dispose(); });
+  furniture.clear();
+  const count = {};
+  items = (saved[state.layout] ?? defaults()).map(({ id, type, x, z, rot }) => {
+    const { label, builder, args, fp } = CATALOG[type].make();
+    const g = new THREE.Group(), inner = new THREE.Group();
+    builder(inner, ...args);
+    inner.position.set(-fp.cx, 0, -fp.cz);
+    g.add(inner);
+    g.userData.id = id;
+    furniture.add(g);
+    count[type] = (count[type] ?? 0) + 1;
+    const name = type === 'chair' ? `Chair ${count[type]}` : count[type] > 1 ? `${label} (${count[type]})` : label;
+    return { id, type, name, g, fp, x, z, rot };
+  });
+  for (const button of $('palette').children) button.textContent = `+ ${CATALOG[button.dataset.type].name} (${count[button.dataset.type] ?? 0})`;
+  refresh();
+}
+
+// Chairs slide backwards when pulled out; the stored position stays the tucked-in one.
+function pullOffset(it) {
+  if (!state.pulled || it.type !== 'chair') return [0, 0];
+  const a = it.rot * Math.PI / 2;
+  return [-Math.round(Math.sin(a)) * 40, -Math.round(Math.cos(a)) * 40];
+}
+function bounds(it) {
+  const [px, pz] = pullOffset(it), turned = it.rot % 2;
+  const w = turned ? it.fp.d : it.fp.w, d = turned ? it.fp.w : it.fp.d;
+  const x = it.x + px, z = it.z + pz;
+  return { x, z, x0: x - w / 2, x1: x + w / 2, z0: z - d / 2, z1: z + d / 2, y0: it.fp.y0, y1: it.fp.y1 };
+}
+const inAlcove = b => b.x0 >= ARCH.x0 - 0.5 && b.x1 <= ARCH.x1 + 0.5 && b.y1 <= ARCH.height;
+// Move an item so its footprint stays inside the walls (or the alcove).
+function clamp(it) {
+  let b = bounds(it);
+  // Pushed past the door wall next to the alcove: slide it along into the opening.
+  if (b.z0 < -0.5 && b.x1 - b.x0 <= ARCH.x1 - ARCH.x0 && b.y1 <= ARCH.height) {
+    const shift = Math.max(0, ARCH.x0 - b.x0) - Math.max(0, b.x1 - ARCH.x1);
+    if (Math.abs(shift) <= 25) { it.x += shift; b = bounds(it); }
+  }
+  it.x += Math.max(0, -b.x0) - Math.max(0, b.x1 - W);
+  it.z += Math.max(0, (inAlcove(b) ? -ARCH.depth : 0) - b.z0) - Math.max(0, b.z1 - D);
+}
+
+// Chairs are meant to slide under the table.
+const exempt = (a, b) => (a.type === 'table' && b.type === 'chair') || (b.type === 'table' && a.type === 'chair');
+const cross = (a0, a1, b0, b1) => a0 < b1 - 0.5 && b0 < a1 - 0.5;
+const collide = (a, b) => {
+  const p = bounds(a), q = bounds(b);
+  return !exempt(a, b) && cross(p.x0, p.x1, q.x0, q.x1) && cross(p.z0, p.z1, q.z0, q.z1) && cross(p.y0, p.y1, q.y0, q.y1);
+};
+// Door swing (a quarter circle around the hinge) plus the open leaf.
+function blocksDoor(it) {
+  const p = bounds(it), hinge = doorX + doorW;
+  const swing = p.x0 < hinge && Math.hypot(hinge - Math.min(p.x1, hinge), p.z0) < doorW - 0.5;
+  const leaf = cross(p.x0, p.x1, hinge - 4, hinge) && p.z0 < doorW - 4;
+  return p.y0 < 205 && (swing || leaf);
+}
+function conflicts() {
+  const list = [], bad = new Set();
+  items.forEach((a, i) => {
+    for (const b of items.slice(i + 1)) if (collide(a, b)) {
+      list.push(`${a.name} overlaps ${b.name}`);
+      bad.add(a).add(b);
+    }
+    if (blocksDoor(a)) { list.push(`${a.name} blocks the door`); bad.add(a); }
+  });
+  return { list, bad };
+}
+
+// Free distance from an item to the nearest obstacle (or wall) on each of its four sides.
+function clearances(it) {
+  const s = bounds(it);
+  return [['Left', 'x', -1], ['Right', 'x', 1], ['Door side', 'z', -1], ['Window side', 'z', 1]].map(([name, ax, dir]) => {
+    const o = ax === 'x' ? 'z' : 'x';
+    const from = s[ax + (dir < 0 ? 0 : 1)];
+    let to = dir < 0 ? (ax === 'z' && inAlcove(s) ? -ARCH.depth : 0) : (ax === 'x' ? W : D);
+    if (ax === 'x' && s.z0 < -0.5) to = dir < 0 ? ARCH.x0 : ARCH.x1;
+    for (const other of items) {
+      if (other === it || exempt(it, other)) continue;
+      const b = bounds(other);
+      if (!cross(s[o + 0], s[o + 1], b[o + 0], b[o + 1]) || !cross(s.y0, s.y1, b.y0, b.y1)) continue;
+      const edge = b[ax + (dir < 0 ? 1 : 0)];
+      if ((edge - from) * dir >= -0.5 && (to - edge) * dir > 0) to = edge;
+    }
+    const gap = Math.max(0, Math.round((to - from) * dir));
+    const mid = (from + to) / 2;
+    return { name, gap, from, to, at: ax === 'x' ? [mid, s.z] : [s.x, mid], ax };
+  });
+}
+
+function tag(text, x, y, z, cls = '') {
+  const el = document.createElement('div');
+  el.className = 'dim ' + cls;
+  el.textContent = text;
+  const o = new CSS2DObject(el);
+  o.position.set(x, y, z);
+  overlay.add(o);
+}
+function outline(b, color) {
+  const box3 = new THREE.Box3(new THREE.Vector3(b.x0, b.y0 + 0.5, b.z0), new THREE.Vector3(b.x1, b.y1, b.z1));
+  overlay.add(new THREE.Box3Helper(box3, color));
+}
+
+const SURFACE = { board: 74, tv: 48 };
+function seat(it) {
+  if (it.type !== 'screen') return;
+  const under = items.find(o => {
+    if (!(o.type in SURFACE)) return false;
+    const b = bounds(o);
+    return it.x > b.x0 && it.x < b.x1 && it.z > b.z0 && it.z < b.z1;
+  });
+  it.fp.y0 = under ? SURFACE[under.type] : 100;
+  it.fp.y1 = it.fp.y0 + 82;
+}
+
+// Apply item positions and redraw outlines, labels and the side panel.
+function refresh() {
+  for (const o of [...overlay.children]) { overlay.remove(o); o.geometry?.dispose(); o.material?.dispose(); }
+  for (const it of items) {
+    seat(it);
+    clamp(it);
+    seat(it);
+    const b = bounds(it);
+    it.g.position.set(b.x, it.type === 'screen' ? b.y0 : 0, b.z);
+    it.g.rotation.y = it.rot * Math.PI / 2;
+    if (it.type !== 'chair' && it.type !== 'cabinets') tag(it.name, b.x, b.y1 + 10, b.z);
+  }
+  tag('Door', doorX + doorW / 2, 20, 25);
+  tag('370 cm', W / 2, H + 12, 0);
+  tag('470 cm', 0, H + 12, D / 2);
+
+  const { list, bad } = conflicts();
+  for (const it of bad) outline(bounds(it), '#e0002a');
+  const sel = selectedItem();
+  let html = 'Drag furniture to move it. Click a piece to see its clearances.<br>';
+  if (sel) {
+    if (!bad.has(sel)) outline(bounds(sel), '#1565c0');
+    const cs = clearances(sel);
+    for (const c of cs) {
+      if (!c.gap) continue;
+      const [x, z] = c.at;
+      const ends = c.ax === 'x' ? [[c.from, z], [c.to, z]] : [[x, c.from], [x, c.to]];
+      const geo = new THREE.BufferGeometry().setFromPoints(ends.map(([ex, ez]) => new THREE.Vector3(ex, 3, ez)));
+      overlay.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: '#1565c0', depthTest: false })));
+      tag(`${c.gap}`, x, 5, z, 'gap');
+    }
+    html = `<b>${sel.name}</b> (cm to nearest)<br>` + cs.map(c => `${c.name}: <b>${c.gap}</b>`).join('<br>') + '<br>';
+  }
+  html += list.map(t => `<span class="warn">${t}</span><br>`).join('');
+  info.innerHTML = html + '<small>Furniture sizes and all heights are estimates.</small>';
+  $('rotate').disabled = $('remove').disabled = !sel;
+}
+
+// ---------- editing ----------
+const selectedItem = () => items.find(i => i.id === state.selected);
+const store = () => { saved[state.layout] = items.map(({ id, type, x, z, rot }) => ({ id, type, x, z, rot })); persist(); };
+function commit(it) {
+  clamp(it);
+  store();
+  refresh();
+}
+function rotate() {
+  const it = selectedItem();
+  if (!it) return;
+  it.rot = (it.rot + 1) % 4;
+  commit(it);
+}
+function remove() {
+  if (!selectedItem()) return;
+  items = items.filter(i => i.id !== state.selected);
+  state.selected = null;
+  store();
+  rebuild();
+}
+// Nearest position to the room centre where the new piece collides with nothing.
+function freeSpot(type, fp) {
+  const spots = [];
+  for (const rot of [0, 1])
+    for (let x = 0; x <= W; x += 5)
+      for (let z = 0; z <= D; z += 5) spots.push({ type, fp, x, z, rot });
+  const far = c => Math.hypot(c.x - W / 2, c.z - D / 2) + c.rot;
+  spots.sort((a, b) => far(a) - far(b));
+  return spots.find(c => {
+    const b = bounds(c);
+    return b.x0 >= 0 && b.x1 <= W && b.z0 >= 0 && b.z1 <= D && !blocksDoor(c) && !items.some(o => collide(c, o));
+  }) ?? { x: W / 2, z: D / 2, rot: 0 }; // no room: drop it in the middle, shown in red
+}
+function addPiece(type) {
+  const { x, z, rot } = freeSpot(type, CATALOG[type].make().fp);
+  const id = `${type}-${Date.now().toString(36)}`;
+  items.push({ id, type, x, z, rot });
+  state.selected = id;
+  store();
+  rebuild();
+}
+
+const ray = new THREE.Raycaster(), floor = new THREE.Plane(), point = new THREE.Vector3();
+let drag = null;
+function aim(e) {
+  ray.setFromCamera(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, 1 - e.clientY / innerHeight * 2), camera);
+}
+const surface = labelRenderer.domElement;
+surface.style.touchAction = 'none';
+// Capture phase, so orbiting can be switched off before OrbitControls sees the event.
+surface.addEventListener('pointerdown', e => {
+  if (!e.isPrimary || e.button !== 0) return;
+  aim(e);
+  const hit = ray.intersectObjects(furniture.children, true)[0];
+  let o = hit?.object;
+  while (o && !o.userData.id) o = o.parent;
+  state.selected = o ? o.userData.id : null;
+  if (o) {
+    const it = selectedItem();
+    controls.enabled = false;
+    surface.setPointerCapture(e.pointerId);
+    floor.set(new THREE.Vector3(0, 1, 0), -hit.point.y); // drag at the height that was grabbed
+    drag = { it, dx: it.x - hit.point.x, dz: it.z - hit.point.z, sx: e.clientX, sy: e.clientY, active: false };
+  }
+  refresh();
+}, true);
+surface.addEventListener('pointermove', e => {
+  if (!drag || !e.isPrimary) return;
+  if (!drag.active && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 4) return; // a click, not a drag
+  drag.active = true;
+  aim(e);
+  if (!ray.ray.intersectPlane(floor, point)) return;
+  const it = drag.it;
+  it.x = point.x + drag.dx;
+  it.z = point.z + drag.dz;
+  // Align edges to a 5 cm grid, and stick to a wall within 8 cm.
+  const b = bounds(it);
+  const snap = (lo, hi, max) => lo < 8 ? -lo : max - hi < 8 ? max - hi : Math.round(lo / 5) * 5 - lo;
+  // Past the wall line inside the opening, the alcove's back wall is the one to stick to.
+  const deep = b.z0 < -8 && b.x0 > ARCH.x0 - 25 && b.x1 < ARCH.x1 + 25;
+  const back = deep ? ARCH.depth : 0;
+  it.x += snap(b.x0, b.x1, W);
+  it.z += snap(b.z0 + back, b.z1 + back, D + back);
+  commit(it);
+});
+for (const type of ['pointerup', 'pointercancel'])
+  surface.addEventListener(type, () => { drag = null; controls.enabled = true; });
+
+addEventListener('keydown', e => {
+  if (e.target.matches?.('input[type=text], select')) return;
+  const it = selectedItem();
+  if (!it || e.ctrlKey || e.metaKey || e.altKey) return;
+  const step = e.shiftKey ? 10 : 1;
+  const nudge = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+  if (nudge) { e.preventDefault(); it.x += nudge[0]; it.z += nudge[1]; commit(it); }
+  else if (e.key.toLowerCase() === 'r') rotate();
+  else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); remove(); }
+  else if (e.key === 'Escape') { state.selected = null; refresh(); }
+});
+
+// ---------- UI ----------
+const info = document.getElementById('info');
+const $ = id => document.getElementById(id);
+const pick = (on, off) => { $(on).classList.add('on'); $(off).classList.remove('on'); };
+for (const type in CATALOG) {
+  const button = document.createElement('button');
+  button.dataset.type = type;
+  button.onclick = () => addPiece(type);
+  $('palette').appendChild(button);
+}
+function view(name) {
+  const far = Math.max(1, 1.3 / camera.aspect);
+  if (name === 'top') { camera.position.set(W / 2, 1050, D / 2 + 1); controls.target.set(W / 2, 0, D / 2); }
+  else if (name === 'arch') {
+    camera.position.set((ARCH.x0 + ARCH.x1) / 2 + 90, 190, 640 * far);
+    controls.target.set((ARCH.x0 + ARCH.x1) / 2 + 30, 105, 0);
+  } else { // from the left, facing the door and right walls
+    camera.position.set(W / 2 - 520 * far, 600 * far, D / 2 + 580 * far);
+    controls.target.set(W / 2 + 30, 40, D / 2);
+  }
+  for (const id of ['iso', 'top', 'arch']) $(id).classList.toggle('on', id === name);
+  controls.update();
+}
+$('suggested').onclick = () => { state.layout = 'suggested'; pick('suggested', 'original'); rebuild(); };
+$('original').onclick = () => { state.layout = 'original'; pick('original', 'suggested'); rebuild(); };
+$('rotate').onclick = rotate;
+$('remove').onclick = remove;
+$('reset').onclick = () => { saved[state.layout] = null; state.selected = null; persist(); rebuild(); };
+$('top').onclick = () => view('top');
+$('arch').onclick = () => view('arch');
+$('iso').onclick = () => view('iso');
+$('longBed').onchange = e => { state.longBed = e.target.checked; rebuild(); };
+$('pulled').onchange = e => { state.pulled = e.target.checked; rebuild(); };
+$('labels').onchange = e => { labelRenderer.domElement.style.visibility = e.target.checked ? 'visible' : 'hidden'; };
+$('export').onclick = () => {
+  const model = new THREE.Group();
+  model.name = 'room';
+  model.add(shell.clone(), furniture.clone());
+  model.traverse(o => { o.visible = true; });
+  model.scale.setScalar(0.01); // cm -> m
+  new GLTFExporter().parse(model, data => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([data], { type: 'model/gltf-binary' }));
+    a.download = `room-${state.layout}.glb`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, err => alert('Export failed: ' + err), { binary: true });
+};
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  labelRenderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- saved versions ----------
+// A version is a named snapshot: which layout, the two checkboxes and every piece.
+const VERSIONS = 'room-3d-versions';
+const cleanVersions = list => (Array.isArray(list) ? list : [])
+  .filter(v => typeof v?.name === 'string' && v.name.trim() && Object.hasOwn(saved, v.layout) && Array.isArray(v.items))
+  .map(v => ({ name: v.name.trim().slice(0, 60), layout: v.layout, longBed: v.longBed === true, pulled: v.pulled === true, items: cleanItems(v.items) }));
+let versions = [];
+try { versions = cleanVersions(JSON.parse(localStorage.getItem(VERSIONS))); } catch {}
+
+const say = text => { $('status').textContent = text; };
+const current = () => ({ layout: state.layout, longBed: state.longBed, pulled: state.pulled, items: cleanItems(items) });
+const same = (a, b) => JSON.stringify([a.layout, a.longBed, a.pulled, a.items]) === JSON.stringify([b.layout, b.longBed, b.pulled, b.items]);
+function listVersions(selected) {
+  $('versions').replaceChildren(...versions.map(v => new Option(v.name, v.name, false, v.name === selected)));
+  if (!versions.length) $('versions').add(new Option('Nothing saved yet', ''));
+  for (const id of ['versions', 'loadVersion', 'deleteVersion', 'exportVersions']) $(id).disabled = !versions.length;
+}
+// Returns false when the browser refuses to store the list.
+function writeVersions() {
+  try { localStorage.setItem(VERSIONS, JSON.stringify(versions)); return true; } catch { return false; }
+}
+const chosen = () => versions.find(v => v.name === $('versions').value);
+const NOT_STORED = 'Browser storage is unavailable: use Export to keep your versions.';
+
+$('saveVersion').onclick = () => {
+  const name = $('versionName').value.trim();
+  if (!name) { say('Type a name first.'); $('versionName').focus(); return; }
+  const at = versions.findIndex(v => v.name === name);
+  if (at >= 0 && !confirm(`Replace the saved version "${name}"?`)) return;
+  const version = { name, ...current() };
+  if (at >= 0) versions[at] = version; else versions.push(version);
+  const stored = writeVersions();
+  listVersions(name);
+  say(stored ? `Saved "${name}".` : NOT_STORED);
+};
+$('versionName').onkeydown = e => { if (e.key === 'Enter') $('saveVersion').click(); };
+$('versions').onchange = () => { $('versionName').value = $('versions').value; };
+$('loadVersion').onclick = () => {
+  const v = chosen();
+  if (!v) return;
+  // Ask only if loading would discard edits that no saved version holds.
+  const now = current();
+  const unsaved = saved[v.layout] && !versions.some(o => o.layout === v.layout && same(o, { ...o, items: cleanItems(saved[v.layout]) }));
+  if (unsaved && !(v.layout === now.layout && same(v, now)) && !confirm(`Load "${v.name}"? Unsaved changes to this layout will be lost.`)) return;
+  Object.assign(state, { layout: v.layout, longBed: v.longBed, pulled: v.pulled, selected: null });
+  saved[v.layout] = cleanItems(v.items);
+  persist();
+  $('longBed').checked = v.longBed;
+  $('pulled').checked = v.pulled;
+  pick(v.layout, v.layout === 'suggested' ? 'original' : 'suggested');
+  $('versionName').value = v.name;
+  rebuild();
+  say(`Loaded "${v.name}".`);
+};
+$('deleteVersion').onclick = () => {
+  const v = chosen();
+  if (!v || !confirm(`Delete the saved version "${v.name}"?`)) return;
+  versions = versions.filter(o => o !== v);
+  const stored = writeVersions();
+  listVersions();
+  say(stored ? `Deleted "${v.name}".` : NOT_STORED);
+};
+$('exportVersions').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(versions, null, 2)], { type: 'application/json' }));
+  a.download = 'room-versions.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+$('importVersions').onclick = () => $('importFile').click();
+$('importFile').onchange = async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let incoming = [];
+  try { incoming = cleanVersions(JSON.parse(await file.text())); } catch {}
+  if (!incoming.length) { say('No saved versions found in that file.'); return; }
+  const clashes = incoming.filter(v => versions.some(o => o.name === v.name)).map(v => v.name);
+  if (clashes.length && !confirm(`Replace these saved versions: ${clashes.join(', ')}?`)) return;
+  versions = [...versions.filter(o => !incoming.some(v => v.name === o.name)), ...incoming];
+  const stored = writeVersions();
+  listVersions(incoming[0].name);
+  say(stored ? `Imported ${incoming.length}. Choose one and press Load.` : NOT_STORED);
+};
+
+listVersions();
+rebuild();
+view('iso');
+renderer.setAnimationLoop(() => {
+  for (const w of walls) w.g.visible = !w.isOutside(camera.position);
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

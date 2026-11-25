@@ -1,0 +1,21 @@
+[
+  {
+    "name": "first version",
+    "layout": "suggested",
+    "longBed": false,
+    "pulled": false,
+    "items": [
+      { "id": "tv-0", "type": "tv", "x": 350, "z": 230, "rot": 3 },
+      { "id": "bed-1", "type": "bed", "x": 40, "z": 170, "rot": 0 },
+      { "id": "sofa-2", "type": "sofa", "x": 195, "z": 422.5, "rot": 0 },
+      { "id": "table-3", "type": "table", "x": 255, "z": 260, "rot": 0 },
+      { "id": "chair-4", "type": "chair", "x": 232, "z": 214.5, "rot": 0 },
+      { "id": "chair-5", "type": "chair", "x": 237, "z": 304.5, "rot": 2 },
+      { "id": "chair-6", "type": "chair", "x": 287, "z": 214.5, "rot": 0 },
+      { "id": "chair-7", "type": "chair", "x": 287, "z": 304.5, "rot": 2 },
+      { "id": "screen-8", "type": "screen", "x": 134.5, "z": -23, "rot": 0 },
+      { "id": "cabinets-9", "type": "cabinets", "x": 351.5, "z": 230, "rot": 3 },
+      { "id": "board-10", "type": "board", "x": 134.5, "z": -23, "rot": 3 }
+    ]
+  }
+]
