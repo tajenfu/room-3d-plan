@@ -737,6 +737,24 @@ $('importFile').onchange = async e => {
 listVersions();
 rebuild();
 view('iso');
+
+// First visit to a hosted copy: show the arrangement published next to this page.
+function firstVisit() {
+  try { return localStorage.getItem(STORE) === null && localStorage.getItem(VERSIONS) === null; } catch { return true; }
+}
+if (location.protocol.startsWith('http') && firstVisit()) {
+  fetch('room-versions.json')
+    .then(response => response.ok ? response.json() : [])
+    .then(data => {
+      const shared = cleanVersions(data);
+      if (!shared.length || !firstVisit()) return; // the visitor has started editing meanwhile
+      versions = shared;
+      writeVersions();
+      listVersions(shared[0].name);
+      $('loadVersion').onclick();
+    })
+    .catch(error => console.warn('Shared arrangement not loaded:', error));
+}
 renderer.setAnimationLoop(() => {
   for (const w of walls) w.g.visible = !w.isOutside(camera.position);
   renderer.render(scene, camera);

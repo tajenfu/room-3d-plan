@@ -5,7 +5,10 @@ in a single HTML file built on three.js.
 
 ## Run
 
-Open `room.html` in Chrome or Edge. This copy loads three.js from jsDelivr, so
+Online: <https://tajenfu.github.io/room-3d-plan/>. A first visit shows the
+arrangement in `room-versions.json`.
+
+Locally: open `room.html` in Chrome or Edge. This copy loads three.js from jsDelivr, so
 it needs an internet connection.
 
 ## Features
