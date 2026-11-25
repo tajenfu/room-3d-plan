@@ -7,7 +7,12 @@
 <style>
   html, body { margin:0; height:100%; overflow:hidden; background:#e9e7e2; font:13px/1.45 system-ui, sans-serif; color:#222; }
   #panel { position:fixed; top:12px; left:12px; width:250px; max-height:calc(100% - 48px); overflow:auto; background:#fffe; border-radius:10px; padding:12px; box-shadow:0 2px 12px #0002; }
-  #panel h1 { font-size:15px; margin:0 0 8px; }
+  #panel #toggle { position:sticky; top:-12px; z-index:1; display:flex; justify-content:space-between; align-items:center; gap:8px; width:calc(100% + 24px); margin:-12px -12px 8px; padding:8px 12px; background:#d5d5d5; border:0; border-radius:10px 10px 0 0; font-size:15px; font-weight:700; text-align:left; }
+  #panel #toggle:hover { background:#c9c9c9; }
+  #panel #toggle::after { content:'▲'; font-size:11px; }
+  #panel.collapsed #toggle { margin-bottom:-12px; border-radius:10px; }
+  #panel.collapsed #toggle::after { content:'▼'; }
+  #panel.collapsed #body { display:none; }
   button { font:inherit; padding:5px 9px; margin:0 4px 6px 0; border:1px solid #bbb; background:#fff; border-radius:6px; cursor:pointer; }
   button.on { background:#333; color:#fff; border-color:#333; }
   label { display:block; margin:3px 0; }
@@ -34,7 +39,8 @@
 </head>
 <body>
 <div id="panel">
-  <h1>Room 370 × 470 cm</h1>
+  <button type="button" id="toggle" aria-expanded="true" aria-controls="body" title="Show or hide the panel">Room 370 × 470 cm</button>
+  <div id="body">
   <div>
     <button id="suggested" class="on">Suggested</button><button id="original">Original plan</button>
   </div>
@@ -57,6 +63,7 @@
   <label><input type="checkbox" id="labels" checked> Show labels</label>
   <button id="export">Download .glb</button>
   <div id="info"></div>
+  </div>
 </div>
 <script type="module">
 import * as THREE from 'three';
@@ -733,6 +740,18 @@ $('importFile').onchange = async e => {
   listVersions(incoming[0].name);
   say(stored ? `Imported ${incoming.length}. Choose one and press Load.` : NOT_STORED);
 };
+
+// The grey bar shrinks the panel to its title; the choice is remembered in this browser.
+function collapse(shut) {
+  $('panel').classList.toggle('collapsed', shut);
+  $('toggle').setAttribute('aria-expanded', String(!shut));
+}
+$('toggle').onclick = () => {
+  const shut = !$('panel').classList.contains('collapsed');
+  collapse(shut);
+  try { localStorage.setItem('room-3d-panel', shut ? 'shut' : 'open'); } catch {}
+};
+try { collapse(localStorage.getItem('room-3d-panel') === 'shut'); } catch {}
 
 listVersions();
 rebuild();
